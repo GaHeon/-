@@ -1,0 +1,207 @@
+import json
+import logging
+import boto3
+from botocore.exceptions import ClientError
+
+# 로깅 설정
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# DynamoDB 테이블 초기화
+dynamodb = boto3.resource('dynamodb', region_name='ap-southeast-1')
+table = dynamodb.Table('test_team_1')
+
+def lambda_handler(event, context):
+    logger.info("Received event: %s", json.dumps(event))
+
+    try:
+        # HTTP 메소드와 body 내용 확인
+        http_method = event.get("httpMethod", "")
+        body = json.loads(event.get("body", "{}"))
+        action = body.get("action", "")
+
+        logger.info("HTTP method: %s", http_method)
+        logger.info("Body content: %s", body)
+        logger.info("Action: %s", action)
+
+        # 요청에 따라 처리 분기
+        if action == "prompt":
+            return handle_prompt(body)
+        elif http_method == "POST" and action == "save":
+            return save_recipe(body)
+        elif http_method == "PUT" and action == "update":
+            return update_recipe(body)
+        elif http_method == "DELETE" and action == "delete":
+            return delete_recipe(body)
+        elif http_method == "GET" and action == "get":
+            return get_recipe(body)
+        else:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Invalid HTTP method or action."}),
+                "headers": {'Content-Type': 'application/json'}
+            }
+
+    except Exception as e:
+        logger.error("Error: %s", str(e))
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)}),
+            "headers": {'Content-Type': 'application/json'}
+        }
+
+# Claude API와 상호작용하는 함수
+def handle_prompt(body):
+    try:
+        user_message = body.get("message", "")
+        
+        # 한글 메시지를 로그로 확인 (제대로 디코딩되었는지)
+        logger.info(f"Received message: {user_message}")
+        
+        client = boto3.client("bedrock-runtime", region_name="us-east-1")
+        model_id = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+        
+        # Claude에 전달할 메시지 구조 (배열 대신 문자열로 수정)
+        conversation = [
+            {
+                "role": "user",
+                "content": user_message  # 단순 문자열
+            }
+        ]
+
+        # Claude에게 메시지 전달
+        response = client.converse(
+            modelId=model_id,
+            messages=conversation,
+            inferenceConfig={"maxTokens": 2048, "stopSequences": ["\n\nHuman:"], "temperature": 0, "topP": 1},
+            additionalModelRequestFields={"top_k": 250}
+        )
+        
+        # Claude의 응답 텍스트 추출
+        response_text = response["output"]["message"]["content"]
+        
+        logger.info(f"Claude response: {response_text}")
+
+        return {
+            'statusCode': 200,
+            'body': json.dumps({"response": response_text}),
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'  # CORS 허용
+            }
+        }
+
+    except (ClientError, Exception) as e:
+        logger.error(f"ERROR: {e}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({"error": str(e)}),
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'  # CORS 허용
+            }
+        }
+
+# 레시피 저장
+def save_recipe(body):
+    try:
+        item = {
+            'user_name': body['user_name'],
+            '255': body['recipe_id'],  # '255' 필드를 유지
+            'RecipeName': body['recipe_name'],
+            'Ingredients': body['ingredients'],
+            'Instructions': body['instructions']
+        }
+        table.put_item(Item=item)
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"message": "Recipe saved successfully."}),
+            "headers": {'Content-Type': 'application/json'}
+        }
+    except ClientError as e:
+        logger.error(e)
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)}),
+            "headers": {'Content-Type': 'application/json'}
+        }
+
+# 레시피 업데이트
+def update_recipe(body):
+    try:
+        key = {
+            'user_name': body['user_name'],
+            '255': body['recipe_id']
+        }
+        update_expression = "set Ingredients = :i, Instructions = :inst"
+        expression_values = {
+            ':i': body['ingredients'],
+            ':inst': body['instructions']
+        }
+        table.update_item(
+            Key=key,
+            UpdateExpression=update_expression,
+            ExpressionAttributeValues=expression_values
+        )
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"message": "Recipe updated successfully."}),
+            "headers": {'Content-Type': 'application/json'}
+        }
+    except ClientError as e:
+        logger.error(e)
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)}),
+            "headers": {'Content-Type': 'application/json'}
+        }
+
+# 레시피 삭제
+def delete_recipe(body):
+    try:
+        key = {
+            'user_name': body['user_name'],
+            '255': body['recipe_id']
+        }
+        table.delete_item(Key=key)
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"message": "Recipe deleted successfully."}),
+            "headers": {'Content-Type': 'application/json'}
+        }
+    except ClientError as e:
+        logger.error(e)
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)}),
+            "headers": {'Content-Type': 'application/json'}
+        }
+
+# 레시피 조회
+def get_recipe(body):
+    try:
+        key = {
+            'user_name': body['user_name'],
+            '255': body['recipe_id']
+        }
+        response = table.get_item(Key=key)
+        item = response.get('Item', {})
+        if item:
+            return {
+                "statusCode": 200,
+                "body": json.dumps(item),
+                "headers": {'Content-Type': 'application/json'}
+            }
+        else:
+            return {
+                "statusCode": 404,
+                "body": json.dumps({"error": "Recipe not found."}),
+                "headers": {'Content-Type': 'application/json'}
+            }
+    except ClientError as e:
+        logger.error(e)
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)}),
+            "headers": {'Content-Type': 'application/json'}
+        }

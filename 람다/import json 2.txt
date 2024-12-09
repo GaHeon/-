@@ -1,0 +1,68 @@
+import json
+import logging
+import boto3
+from botocore.exceptions import ClientError
+
+# 로깅 설정
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def lambda_handler(event, context):
+    # 프론트엔드에서 받아온 event 객체 확인
+    logger.info(event)
+    
+    try:
+        # body에서 메시지 추출 (event["body"]는 JSON 형식)
+        body = json.loads(event["body"])
+        user_message = body.get("message", "")
+        
+        # 한글 메시지를 로그로 확인 (제대로 디코딩되었는지)
+        logger.info(f"받은 메시지: {user_message}")
+        
+        client = boto3.client("bedrock-runtime", region_name="us-east-1")
+        model_id = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+        
+        # Claude에 전달할 메시지 구조
+        conversation = [
+            {
+                "role": "user",
+                "content": [{"text": user_message}],
+            }
+        ]
+        
+
+        
+        
+        # Claude에게 메시지 전달
+        response = client.converse(
+            modelId=model_id,
+            messages=conversation,
+            inferenceConfig={"maxTokens":2048,"stopSequences":["\n\nHuman:"],"temperature":0,"topP":1},
+            additionalModelRequestFields={"top_k":250}
+        )
+        
+        # Claude의 응답 텍스트 추출
+        response_text = response["output"]["message"]["content"][0]["text"]
+        
+        logger.info(f"받은 메시지: {response_text}")
+
+        # 응답 반환
+        return {
+            'statusCode': 200,
+            'body': json.dumps({"response": response_text}),
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'  # CORS 허용
+            }
+        }
+
+    except (ClientError, Exception) as e:
+        logger.error(f"ERROR: {e}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({"error": str(e)}),
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'  # CORS 허용
+            }
+        }
